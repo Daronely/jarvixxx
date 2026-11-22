@@ -1,0 +1,13 @@
+/* the team behind Jarvixxx */
+
+__SITE:      https://jx3.ir
+__LANGUAGE:  English / Persian
+__STACK:     Vanilla HTML, CSS, JS · GSAP · Canvas 2D · PHP 8 · SQLite
+
+__MAKER:     Daronely
+__MAKER_URL: https://github.com/Daronely
+
+__THANKS:    GSAP (GreenSock) · Lenis · Vazirmatn & Estedad type designers ·
+             Space Grotesk & Syne (Google Fonts) · JetBrains Mono
+
+A Jarvixxx product — built in the Metora flow.
