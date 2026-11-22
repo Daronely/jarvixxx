@@ -1,13 +1,15 @@
 /* ════════════════════════════════════════════════════════════════
-   Jarvixxx — motion & interaction engine
-   Contracts: single-RAF Lenis+GSAP · Float32Array particles ·
-   quickTo magnetics · word-level Persian manifesto · compositor-only
+   Jarvixxx — motion & interaction engine v2
+   Single-RAF Lenis+GSAP · Float32Array particles (physics fixed for
+   accent dots) · quickTo magnetics · word-level manifesto · form v2
    ════════════════════════════════════════════════════════════════ */
 "use strict";
 
 (function () {
   const RM = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const FINE = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  const I18N = window.JX_I18N || {};
+  const t = (k, fallback) => (I18N[k] != null ? I18N[k] : fallback);
 
   gsap.registerPlugin(ScrollTrigger, SplitText, ScrambleTextPlugin);
 
@@ -20,7 +22,6 @@
     lenis.on("scroll", ScrollTrigger.update);
     gsap.ticker.add((time) => { lenis.raf(time * 1000); });
     gsap.ticker.lagSmoothing(0);
-    // anchor clicks through lenis
     document.querySelectorAll('a[href^="#"]').forEach((a) => {
       a.addEventListener("click", (e) => {
         const id = a.getAttribute("href");
@@ -34,8 +35,8 @@
 
   /* ─────────────────────────────────────────────
      2. Hero Canvas 2D particle text — JARVIXXX
-     Float32Array physics, honeycomb staggered grid,
-     mouse repulsion + spring return, dpr cap 2
+     Single physics pass over ALL particles; draws batched
+     into two colors (accent dots precollected as indices).
      ───────────────────────────────────────────── */
   function initHeroCanvas() {
     const canvas = document.getElementById("heroCanvas");
@@ -46,11 +47,11 @@
     const MOBILE = window.innerWidth < 640;
     const DPR = Math.min(2, window.devicePixelRatio || 1);
     const TEXT = "JARVIXXX";
-    const FONT = (weight) => `800 ${canvas.dataset.fs || 1}px Syne, sans-serif`;
 
     let W = 0, H = 0, running = true, inView = true;
-    let parts = null; // Float32Array: x,y,vx,vy,tx,ty interleaved ×6
+    let parts = null;   // Float32Array ×6: x,y,vx,vy,tx,ty
     let count = 0;
+    let isAccent = new Uint8Array(0), accentIdx = [];
     let mouse = { x: -9999, y: -9999 };
     const REPULSE_R = MOBILE ? 0 : 70, REPULSE_R2 = REPULSE_R * REPULSE_R;
 
@@ -62,14 +63,13 @@
     }
 
     function buildTargets() {
-      // find font size that fits width
       let fs = Math.min(H * 0.62, 200);
       const off = document.createElement("canvas");
       const octx = off.getContext("2d", { willReadFrequently: true });
       octx.font = `800 ${fs}px Syne, sans-serif`;
-      let m = octx.measureText(TEXT);
+      const m = octx.measureText(TEXT);
       const maxW = W * 0.92;
-      if (m.width > maxW) { fs = fs * maxW / m.width; }
+      if (m.width > maxW) fs = fs * maxW / m.width;
       off.width = Math.ceil(W); off.height = Math.ceil(H);
       octx.fillStyle = "#fff";
       octx.font = `800 ${fs}px Syne, sans-serif`;
@@ -77,7 +77,6 @@
       octx.fillText(TEXT, W / 2, H / 2);
       const img = octx.getImageData(0, 0, off.width, off.height).data;
 
-      // staggered honeycomb grid sampling (~82% targets, 18% ambient halo)
       const gap = MOBILE ? 7 : 9;
       const pts = [];
       for (let y = 0; y < H; y += gap) {
@@ -86,24 +85,24 @@
           const px = Math.round(x + rowShift), py = Math.round(y);
           if (px >= W || py >= H) continue;
           const a = img[(py * W + px) * 4 + 3];
-          if (a > 128 && Math.random() < 0.82) {
-            pts.push(px, py, 1); // target particle
-          } else if (a <= 128 && Math.random() < 0.018) {
-            pts.push(px, py, 0); // ambient halo
-          }
+          if (a > 128 && Math.random() < 0.82) pts.push(px, py);
+          else if (a <= 128 && Math.random() < 0.018) pts.push(px, py);
         }
       }
-      count = pts.length / 3;
+      count = pts.length / 2;
       parts = new Float32Array(count * 6);
       for (let i = 0; i < count; i++) {
-        const tx = pts[i * 3], ty = pts[i * 3 + 1];
-        // spawn from random edge for entrance formation
         const ang = Math.random() * Math.PI * 2;
         const rad = Math.max(W, H) * (0.5 + Math.random() * 0.6);
-        parts[i * 6] = W / 2 + Math.cos(ang) * rad;
+        parts[i * 6]     = W / 2 + Math.cos(ang) * rad;
         parts[i * 6 + 1] = H / 2 + Math.sin(ang) * rad;
         parts[i * 6 + 2] = 0; parts[i * 6 + 3] = 0;
-        parts[i * 6 + 4] = tx; parts[i * 6 + 5] = ty;
+        parts[i * 6 + 4] = pts[i * 2]; parts[i * 6 + 5] = pts[i * 2 + 1];
+      }
+      isAccent = new Uint8Array(count);
+      accentIdx = [];
+      for (let i = 0; i < count; i++) {
+        if (Math.random() < 0.035) { isAccent[i] = 1; accentIdx.push(i); }
       }
     }
 
@@ -112,54 +111,42 @@
       if (!running) return;
       const dt = Math.min(0.05, (t - lastT) / 1000 || 0.016);
       lastT = t;
-      if (inView) {
+      if (inView && count) {
         ctx.clearRect(0, 0, W, H);
-        // batch: accent first (few), then ink
         const S = MOBILE ? 1.6 : 2.2;
-        // pass 1: accent dots (precomputed indices)
-        ctx.fillStyle = "rgba(89,194,230,0.95)";
-        for (let k = 0; k < accentIdx.length; k++) {
-          const i = accentIdx[k];
-          ctx.fillRect(parts[i * 6], parts[i * 6 + 1], S, S);
-        }
-        ctx.fillStyle = "rgba(238,241,246,0.88)";
+        const damp = Math.pow(0.0018, dt);
+        const spring = 14 * dt, push = 900 * dt;
+        // one physics pass for ALL particles (incl. accent — fixed)
         for (let i = 0; i < count; i++) {
-          if (isAccent[i]) continue;
           const xi = i * 6;
-          // spring toward target + mouse repulsion (squared distance early exit)
-          let dx = parts[xi + 4] - parts[xi], dy = parts[xi + 5] - parts[xi + 1];
-          let vx = parts[xi + 2] + dx * 14 * dt, vy = parts[xi + 3] + dy * 14 * dt;
+          const dx = parts[xi + 4] - parts[xi], dy = parts[xi + 5] - parts[xi + 1];
+          let vx = parts[xi + 2] + dx * spring, vy = parts[xi + 3] + dy * spring;
           if (REPULSE_R > 0) {
             const mdx = parts[xi] - mouse.x, mdy = parts[xi + 1] - mouse.y;
             const d2 = mdx * mdx + mdy * mdy;
             if (d2 < REPULSE_R2 && d2 > 0.01) {
               const d = Math.sqrt(d2);
-              const f = (1 - d / REPULSE_R) * 900 * dt / d;
+              const f = (1 - d / REPULSE_R) * push / d;
               vx += mdx * f; vy += mdy * f;
             }
           }
-          const damp = Math.pow(0.0018, dt); // ~damping
           parts[xi + 2] = vx * damp; parts[xi + 3] = vy * damp;
           parts[xi] += vx * dt; parts[xi + 1] += vy * dt;
+        }
+        // draw: two color batches
+        ctx.fillStyle = "rgba(89,194,230,0.95)";
+        for (let k = 0; k < accentIdx.length; k++) {
+          const xi = accentIdx[k] * 6;
           ctx.fillRect(parts[xi], parts[xi + 1], S, S);
         }
-        // accent particles also need physics — do them in same loop? They were skipped.
-        // Fix: run physics inside single loop; two passes only for color batching of draws.
+        ctx.fillStyle = "rgba(238,241,246,0.88)";
+        for (let i = 0; i < count; i++) {
+          if (isAccent[i]) continue;
+          const xi = i * 6;
+          ctx.fillRect(parts[xi], parts[xi + 1], S, S);
+        }
       }
       requestAnimationFrame(frame);
-    }
-
-    // accent assignment after build
-    let isAccent = new Uint8Array(0), accentIdx = [];
-
-    function rebuild() {
-      sizeCanvas();
-      buildTargets();
-      isAccent = new Uint8Array(count);
-      accentIdx = [];
-      for (let i = 0; i < count; i++) {
-        if (Math.random() < 0.035) { isAccent[i] = 1; accentIdx.push(i); }
-      }
     }
 
     if (FINE && !RM) {
@@ -170,69 +157,56 @@
       canvas.addEventListener("pointerleave", () => { mouse.x = -9999; mouse.y = -9999; });
     }
 
-    // pause when offscreen / tab hidden
     new IntersectionObserver((es) => { inView = es[0].isIntersecting; }, { threshold: 0 }).observe(canvas);
-    document.addEventListener("visibilitychange", () => { running = !document.hidden; if (running) requestAnimationFrame(frame); });
+    document.addEventListener("visibilitychange", () => {
+      running = !document.hidden;
+      if (running) requestAnimationFrame(frame);
+    });
 
     let rto = null;
-    window.addEventListener("resize", () => { clearTimeout(rto); rto = setTimeout(rebuild, 200); });
+    window.addEventListener("resize", () => { clearTimeout(rto); rto = setTimeout(buildTargets, 200); });
 
-    document.fonts.ready.then(() => { rebuild(); requestAnimationFrame(frame); });
-
-    if (RM) {
-      // static render: just draw once at targets
-      document.fonts.ready.then(() => {
-        rebuild();
-        // snap particles to targets and draw once
-        for (let i = 0; i < count; i++) {
-          parts[i * 6] = parts[i * 6 + 4]; parts[i * 6 + 1] = parts[i * 6 + 5];
-        }
-        running = true; inView = true;
-        const once = () => {
-          ctx.clearRect(0, 0, W, H);
-          const S = MOBILE ? 1.6 : 2.2;
-          ctx.fillStyle = "rgba(89,194,230,0.95)";
-          for (const i of accentIdx) ctx.fillRect(parts[i * 6], parts[i * 6 + 1], S, S);
-          ctx.fillStyle = "rgba(238,241,246,0.88)";
-          for (let i = 0; i < count; i++) if (!isAccent[i]) ctx.fillRect(parts[i * 6], parts[i * 6 + 1], S, S);
-        };
-        once();
-        running = false; // stop RAF loop
-      });
+    function renderStatic() {
+      for (let i = 0; i < count; i++) {
+        parts[i * 6] = parts[i * 6 + 4]; parts[i * 6 + 1] = parts[i * 6 + 5];
+      }
+      ctx.clearRect(0, 0, W, H);
+      const S = MOBILE ? 1.6 : 2.2;
+      ctx.fillStyle = "rgba(89,194,230,0.95)";
+      for (const i of accentIdx) ctx.fillRect(parts[i * 6], parts[i * 6 + 1], S, S);
+      ctx.fillStyle = "rgba(238,241,246,0.88)";
+      for (let i = 0; i < count; i++) if (!isAccent[i]) ctx.fillRect(parts[i * 6], parts[i * 6 + 1], S, S);
     }
+
+    document.fonts.ready.then(() => {
+      sizeCanvas();
+      buildTargets();
+      if (RM) renderStatic();
+      else requestAnimationFrame(frame);
+    });
   }
   initHeroCanvas();
 
   /* ─────────────────────────────────────────────
-     3. Manifesto — word-level reading front (Persian-safe)
+     3. Manifesto — word-level reading front
      ───────────────────────────────────────────── */
   function initManifesto() {
     const el = document.getElementById("manifestoText");
-    if (!el) return;
-    if (RM) return; // plain text stays
-
-    // word-level split manually (SplitText words is safe, but manual = zero risk with ZWNJ)
-    const words = el.textContent.trim().split(/\s+/);
-    el.innerHTML = words.map((w) => `<span class="w">${w}</span>`).join(" ");
+    if (!el || RM) return;
     const spans = el.querySelectorAll(".w");
-
+    if (!spans.length) return;
     gsap.set(spans, { color: "oklch(0.32 0.015 245)" });
     gsap.to(spans, {
       color: "oklch(0.95 0.008 245)",
       ease: "none",
       stagger: 0.55,
-      scrollTrigger: {
-        trigger: el,
-        start: "top 78%",
-        end: "bottom 45%",
-        scrub: 0.6,
-      },
+      scrollTrigger: { trigger: el, start: "top 78%", end: "bottom 45%", scrub: 0.6 },
     });
   }
   initManifesto();
 
   /* ─────────────────────────────────────────────
-     4. Magnetic buttons — gsap.quickTo (no per-move tweens)
+     4. Magnetic buttons — gsap.quickTo
      ───────────────────────────────────────────── */
   function initMagnetics() {
     if (!FINE || RM) return;
@@ -241,9 +215,8 @@
       const yTo = gsap.quickTo(el, "y", { duration: 0.32, ease: "power3.out" });
       el.addEventListener("pointermove", (e) => {
         const r = el.getBoundingClientRect();
-        const relX = e.clientX - (r.left + r.width / 2);
-        const relY = e.clientY - (r.top + r.height / 2);
-        xTo(relX * 0.3); yTo(relY * 0.35);
+        xTo((e.clientX - (r.left + r.width / 2)) * 0.3);
+        yTo((e.clientY - (r.top + r.height / 2)) * 0.35);
       });
       el.addEventListener("pointerleave", () => { xTo(0); yTo(0); });
     });
@@ -251,7 +224,7 @@
   initMagnetics();
 
   /* ─────────────────────────────────────────────
-     5. Bento card: cursor spotlight + 3D tilt
+     5. Bento cards: spotlight + subtle 3D tilt
      ───────────────────────────────────────────── */
   function initCards() {
     if (!FINE || RM) return;
@@ -264,7 +237,7 @@
         const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
         card.style.setProperty("--spot-x", (px * 100) + "%");
         card.style.setProperty("--spot-y", (py * 100) + "%");
-        rX((0.5 - py) * 8); rY((px - 0.5) * 8); // max ±4deg (subtle)
+        rX((0.5 - py) * 8); rY((px - 0.5) * 8);
       });
       card.addEventListener("pointerleave", () => { rX(0); rY(0); });
     });
@@ -272,7 +245,7 @@
   initCards();
 
   /* ─────────────────────────────────────────────
-     6. Filter tabs — spring indicator + URL state
+     6. Filter tabs — indicator + URL state
      ───────────────────────────────────────────── */
   function initFilter() {
     const tabs = document.querySelectorAll(".filter-tab");
@@ -280,12 +253,6 @@
     const cards = document.querySelectorAll(".b-card");
     if (!tabs.length || !indicator) return;
 
-    function moveIndicator(tab) {
-      indicator.style.width = tab.offsetWidth + "px";
-      indicator.style.transform = `translateX(${tab.offsetLeft - 4}px)`;
-    }
-    // RTL: offsetLeft works the same since we use translateX in LTR coordinate space.
-    // For RTL correctness measure with inset-inline logic:
     function place(tab) {
       const parent = tabs[0].parentElement.getBoundingClientRect();
       const tr = tab.getBoundingClientRect();
@@ -297,7 +264,7 @@
     }
 
     function apply(filter, tab) {
-      tabs.forEach((t) => t.setAttribute("aria-selected", t === tab ? "true" : "false"));
+      tabs.forEach((tb) => tb.setAttribute("aria-selected", tb === tab ? "true" : "false"));
       place(tab);
       cards.forEach((c) => {
         const show = filter === "all" || c.dataset.track === filter;
@@ -314,21 +281,17 @@
           }
         }
       });
-      // URL state sync
       const u = new URL(location);
       if (filter === "all") u.searchParams.delete("track"); else u.searchParams.set("track", filter);
       history.replaceState(null, "", u);
       if (lenis) ScrollTrigger.refresh();
     }
 
-    tabs.forEach((t) => t.addEventListener("click", () => apply(t.dataset.filter, t)));
-
-    // init from URL
+    tabs.forEach((tb) => tb.addEventListener("click", () => apply(tb.dataset.filter, tb)));
     const initial = new URLSearchParams(location.search).get("track");
-    const initTab = Array.from(tabs).find((t) => t.dataset.filter === initial) || tabs[0];
-    requestAnimationFrame(() => { place(initTab); });
+    const initTab = Array.from(tabs).find((tb) => tb.dataset.filter === initial) || tabs[0];
+    requestAnimationFrame(() => place(initTab));
     if (initial && initTab.dataset.filter !== "all") apply(initial, initTab);
-
     window.addEventListener("resize", () => {
       const active = document.querySelector('.filter-tab[aria-selected="true"]');
       if (active) place(active);
@@ -337,11 +300,12 @@
   initFilter();
 
   /* ─────────────────────────────────────────────
-     7. Reveal-on-scroll (batched, progressive)
+     7. Reveal-on-scroll (batched)
      ───────────────────────────────────────────── */
   function initReveal() {
     const els = document.querySelectorAll(".reveal");
     if (RM) { els.forEach((e) => e.classList.add("revealed")); return; }
+    gsap.set(els, { opacity: 0, y: 26 });
     ScrollTrigger.batch(els, {
       start: "top 88%",
       onEnter: (batch) => gsap.to(batch, {
@@ -349,20 +313,17 @@
         onStart: () => batch.forEach((b) => b.classList.add("revealed")),
       }),
     });
-    gsap.set(els, { opacity: 0, y: 26 });
   }
   initReveal();
 
   /* ─────────────────────────────────────────────
-     8. Counter stats (tabular-nums)
+     8. Counter stats — latin digits on both locales
      ───────────────────────────────────────────── */
   function initCounters() {
     document.querySelectorAll("[data-count]").forEach((el) => {
       const end = +el.dataset.count;
       const suffix = el.dataset.suffix || "";
-      const isTrack = el.dataset.kind === "track";
-      const faDigits = "۰۱۲۳۴۵۶۷۸۹";
-      const fmt = (n) => String(n).replace(/\d/g, (d) => faDigits[+d]) + suffix;
+      const fmt = (n) => String(n) + suffix; // latin digits per user request
       if (RM) { el.textContent = fmt(end); return; }
       const obj = { v: 0 };
       gsap.to(obj, {
@@ -376,7 +337,8 @@
   initCounters();
 
   /* ─────────────────────────────────────────────
-     9. ScrambleText on direct links (fixed cells, aria intact)
+     9. Scramble effects — dwell (handles) + hover (labels)
+     ScrambleText keeps cells fixed → layout-safe, aria-safe.
      ───────────────────────────────────────────── */
   function initScramble() {
     if (RM) return;
@@ -390,11 +352,22 @@
         });
       });
     });
+    document.querySelectorAll("[data-scramble-hover]").forEach((el) => {
+      const original = el.textContent;
+      if (!original.trim()) return;
+      el.addEventListener("pointerenter", () => {
+        gsap.to(el, {
+          duration: 0.55,
+          scrambleText: { text: original, chars: "upperCase", revealDelay: 0.15, speed: 1.4 },
+          ease: "none",
+        });
+      });
+    });
   }
   initScramble();
 
   /* ─────────────────────────────────────────────
-     10. Navbar shrink on scroll
+     10. Navbar shrink
      ───────────────────────────────────────────── */
   function initNav() {
     const nav = document.getElementById("navbar");
@@ -408,7 +381,7 @@
   initNav();
 
   /* ─────────────────────────────────────────────
-     11. Tier-2 liquid glass for Chromium only
+     11. Tier-2 liquid glass (Chromium 120+ only)
      ───────────────────────────────────────────── */
   function initGlassTier2() {
     const ua = navigator.userAgentData;
@@ -420,7 +393,7 @@
   initGlassTier2();
 
   /* ─────────────────────────────────────────────
-     12. Contact form (fetch + inline validation)
+     12. Contact form v2 — chips, counter, spinner, shake
      ───────────────────────────────────────────── */
   function initForm() {
     const form = document.getElementById("contactForm");
@@ -428,23 +401,50 @@
     const status = document.getElementById("formStatus");
     const btn = document.getElementById("submitBtn");
     const label = document.getElementById("submitLabel");
+    const counter = document.getElementById("fCounter");
+    const msgField = form.elements.message;
+    let topic = "idea";
 
-    function setErr(input, on) {
-      input.closest(".f-field").classList.toggle("invalid", on);
+    form.querySelectorAll(".f-chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        form.querySelectorAll(".f-chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
+        chip.setAttribute("aria-pressed", "true");
+        topic = chip.dataset.topic;
+      });
+    });
+
+    function updateCounter() {
+      if (!counter) return;
+      const n = msgField.value.length, max = 3000;
+      counter.textContent = n + " / " + max;
+      counter.classList.toggle("warn", n > max * 0.85 && n <= max);
+      counter.classList.toggle("max", n > max);
     }
+    msgField.addEventListener("input", updateCounter);
+    updateCounter();
+
+    function setErr(input, on) { input.closest(".f-field").classList.toggle("invalid", on); }
+    function shake() {
+      form.classList.remove("shake");
+      void form.offsetWidth; // restart animation
+      form.classList.add("shake");
+    }
+
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const name = form.name_, // placeholder to avoid name clash; use elements
-        f = form.elements;
-      let firstBad = null;
+      const f = form.elements;
       const nameOk = f.name.value.trim().length >= 2;
       const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.email.value.trim());
       const msgOk = f.message.value.trim().length >= 10;
       setErr(f.name, !nameOk); setErr(f.email, !emailOk); setErr(f.message, !msgOk);
-      if (!nameOk) firstBad = f.name; else if (!emailOk) firstBad = f.email; else if (!msgOk) firstBad = f.message;
-      if (firstBad) { firstBad.focus(); return; }
+      if (!nameOk || !emailOk || !msgOk) {
+        shake();
+        (nameOk ? (emailOk ? f.message : f.email) : f.name).focus();
+        return;
+      }
 
-      btn.disabled = true; label.textContent = "در حال ارسال…";
+      btn.disabled = true; btn.classList.add("loading");
+      label.textContent = t("sending", "Sending…");
       status.className = "form-status"; status.textContent = "";
       try {
         const res = await fetch("api/contact.php", {
@@ -453,28 +453,35 @@
           body: JSON.stringify({
             name: f.name.value.trim(),
             email: f.email.value.trim(),
-            topic: f.topic.value,
+            topic: topic,
+            subject: f.subject.value.trim(),
             message: f.message.value.trim(),
             website: f.website.value, // honeypot
           }),
         });
-        const j = await res.json();
+        const j = await res.json().catch(() => ({}));
         if (res.ok && j.ok) {
           status.className = "form-status ok";
-          status.textContent = "پیام رسید! خیلی زود جواب می‌دهیم.";
+          status.textContent = t("ok", "Message received!");
           form.reset();
+          updateCounter();
+        } else if (res.status === 429) {
+          status.className = "form-status err";
+          status.textContent = t("errRate", "Too many messages — try again later.");
+          shake();
         } else {
           status.className = "form-status err";
-          status.textContent = res.status === 429 ? "چند پیام پشت‌سرهم فرستادید؛ کمی بعد دوباره تلاش کنید." : "ارسال نشد؛ لطفاً دوباره تلاش کنید یا ایمیل بزنید.";
+          status.textContent = t("errSend", "Couldn't send — try again.");
         }
       } catch {
         status.className = "form-status err";
-        status.textContent = "اتصال برقرار نشد؛ اینترنت را بررسی کنید.";
+        status.textContent = t("errNet", "Connection failed.");
       } finally {
-        btn.disabled = false; label.textContent = "فرستادن پیام";
+        btn.disabled = false; btn.classList.remove("loading");
+        label.textContent = t("submit", "Send");
       }
     });
-    // live-clear errors
+
     ["name", "email", "message"].forEach((k) => {
       form.elements[k].addEventListener("input", () => setErr(form.elements[k], false));
     });
@@ -482,27 +489,19 @@
   initForm();
 
   /* ─────────────────────────────────────────────
-     13. notify buttons (roadmap cards)
+     13. Notify buttons (roadmap cards)
      ───────────────────────────────────────────── */
   function initNotify() {
     document.querySelectorAll("[data-notify]").forEach((a) => {
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        const label = a.textContent;
-        a.textContent = "ثبت شد ✓ برای اطلاع، فرم تماس را پر کنید";
-        setTimeout(() => (a.textContent = label), 3200);
+        const orig = a.textContent;
+        a.textContent = t("notifyDone", "Noted ✓");
+        setTimeout(() => (a.textContent = orig), 3200);
       });
     });
   }
   initNotify();
 
-  /* ─────────────────────────────────────────────
-     14. language toggle → English placeholder page
-     ───────────────────────────────────────────── */
-  document.getElementById("langToggle")?.addEventListener("click", () => {
-    location.href = "index.html?lang=en"; // graceful: same page, toggle flag below
-  });
-
-  /* refresh triggers after everything settles */
   window.addEventListener("load", () => ScrollTrigger.refresh());
 })();
